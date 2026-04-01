@@ -45,7 +45,11 @@ func (s *Service) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*p
 	total := &pb.Money{CurrencyCode: req.UserCurrency, Units: 0, Nanos: 0}
 	total = money.Must(money.Sum(total, prep.shippingCostLocalized))
 	for _, it := range prep.orderItems {
-		multPrice := money.MultiplySlow(it.Cost, uint32(it.GetItem().GetQuantity()))
+		qty := it.GetItem().GetQuantity()
+		if qty < 0 {
+			qty = 0
+		}
+		multPrice := money.MultiplySlow(it.Cost, uint32(qty))
 		total = money.Must(money.Sum(total, multPrice))
 	}
 

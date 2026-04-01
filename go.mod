@@ -1,6 +1,6 @@
 module checkout-service
 
-go 1.25.0
+go 1.25.8
 
 require (
 	github.com/google/uuid v1.6.0
@@ -12,7 +12,7 @@ require (
 	go.opentelemetry.io/otel v1.42.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.42.0
 	go.opentelemetry.io/otel/sdk v1.42.0
-	google.golang.org/grpc v1.79.2
+	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
 )
 

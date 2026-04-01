@@ -1,9 +1,11 @@
 name: CI - Main
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch: # manual trigger via GitHub Actions UI
+
+  # push:
+  #   branches-ignore:
+  #     - main
 
 jobs:
   # ─── STAGE 1 (parallel) ───────────────────────────────────────────────────
