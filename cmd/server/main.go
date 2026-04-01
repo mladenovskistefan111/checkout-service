@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	_ "net/http/pprof"
+	"net/http/pprof"
 	"os"
 	"time"
 
@@ -127,20 +127,47 @@ func run(port string) error {
 	grpcprom.Register(srv)
 	grpcprom.EnableHandlingTimeHistogram()
 
-	// --- Metrics + pprof HTTP server ---
+	// --- Metrics HTTP server with explicit timeouts (G114 fix) ---
 	go func() {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
-		mux.Handle("/debug/pprof/", http.DefaultServeMux)
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", promhttp.Handler())
+
+		// G108 fix: only register pprof handlers when explicitly enabled,
+		// never on http.DefaultServeMux.
+		if os.Getenv("ENABLE_PROFILING") == "1" {
+			registerPprofHandlers(metricsMux)
+			log.Info("pprof endpoints registered on metrics server")
+		}
+
 		metricsPort := envOrDefault("METRICS_PORT", "9090")
-		log.Infof("metrics + pprof endpoint on :%s", metricsPort)
-		if err := http.ListenAndServe(":"+metricsPort, mux); err != nil {
+		metricsSrv := &http.Server{
+			Addr:              ":" + metricsPort,
+			Handler:           metricsMux,
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      60 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+
+		log.Infof("metrics endpoint on :%s", metricsPort)
+		if err := metricsSrv.ListenAndServe(); err != nil {
 			log.Warnf("metrics server error: %v", err)
 		}
 	}()
 
 	log.Infof("listening on %s", listener.Addr().String())
 	return srv.Serve(listener)
+}
+
+// registerPprofHandlers adds pprof handlers to the given mux.
+// Avoids the blank import of net/http/pprof which unconditionally
+// registers handlers on DefaultServeMux (gosec G108).
+func registerPprofHandlers(mux *http.ServeMux) {
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 }
 
 func dialGRPC(addr string) (*grpc.ClientConn, error) {

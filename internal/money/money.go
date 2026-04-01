@@ -17,36 +17,36 @@ var (
 	ErrMismatchingCurrency = errors.New("mismatching currency codes")
 )
 
-func IsValid(m pb.Money) bool {
+func IsValid(m *pb.Money) bool {
 	return signMatches(m) && validNanos(m.GetNanos())
 }
 
-func signMatches(m pb.Money) bool {
+func signMatches(m *pb.Money) bool {
 	return m.GetNanos() == 0 || m.GetUnits() == 0 || (m.GetNanos() < 0) == (m.GetUnits() < 0)
 }
 
 func validNanos(nanos int32) bool { return nanosMin <= nanos && nanos <= nanosMax }
 
-func IsZero(m pb.Money) bool { return m.GetUnits() == 0 && m.GetNanos() == 0 }
+func IsZero(m *pb.Money) bool { return m.GetUnits() == 0 && m.GetNanos() == 0 }
 
-func IsPositive(m pb.Money) bool {
+func IsPositive(m *pb.Money) bool {
 	return IsValid(m) && m.GetUnits() > 0 || (m.GetUnits() == 0 && m.GetNanos() > 0)
 }
 
-func IsNegative(m pb.Money) bool {
+func IsNegative(m *pb.Money) bool {
 	return IsValid(m) && m.GetUnits() < 0 || (m.GetUnits() == 0 && m.GetNanos() < 0)
 }
 
-func AreSameCurrency(l, r pb.Money) bool {
+func AreSameCurrency(l, r *pb.Money) bool {
 	return l.GetCurrencyCode() == r.GetCurrencyCode() && l.GetCurrencyCode() != ""
 }
 
-func AreEquals(l, r pb.Money) bool {
+func AreEquals(l, r *pb.Money) bool {
 	return l.GetCurrencyCode() == r.GetCurrencyCode() &&
 		l.GetUnits() == r.GetUnits() && l.GetNanos() == r.GetNanos()
 }
 
-func Negate(m pb.Money) pb.Money {
+func Negate(m *pb.Money) pb.Money {
 	return pb.Money{
 		Units:        -m.GetUnits(),
 		Nanos:        -m.GetNanos(),
@@ -54,18 +54,18 @@ func Negate(m pb.Money) pb.Money {
 	}
 }
 
-func Must(v pb.Money, err error) pb.Money {
+func Must(v *pb.Money, err error) *pb.Money {
 	if err != nil {
 		panic(err)
 	}
 	return v
 }
 
-func Sum(l, r pb.Money) (pb.Money, error) {
+func Sum(l, r *pb.Money) (*pb.Money, error) {
 	if !IsValid(l) || !IsValid(r) {
-		return pb.Money{}, ErrInvalidValue
+		return nil, ErrInvalidValue
 	} else if l.GetCurrencyCode() != r.GetCurrencyCode() {
-		return pb.Money{}, ErrMismatchingCurrency
+		return nil, ErrMismatchingCurrency
 	}
 	units := l.GetUnits() + r.GetUnits()
 	nanos := l.GetNanos() + r.GetNanos()
@@ -83,15 +83,19 @@ func Sum(l, r pb.Money) (pb.Money, error) {
 		}
 	}
 
-	return pb.Money{
+	return &pb.Money{
 		Units:        units,
 		Nanos:        nanos,
 		CurrencyCode: l.GetCurrencyCode(),
 	}, nil
 }
 
-func MultiplySlow(m pb.Money, n uint32) pb.Money {
-	out := m
+func MultiplySlow(m *pb.Money, n uint32) *pb.Money {
+	out := &pb.Money{
+		CurrencyCode: m.GetCurrencyCode(),
+		Units:        m.GetUnits(),
+		Nanos:        m.GetNanos(),
+	}
 	for n > 1 {
 		out = Must(Sum(out, m))
 		n--

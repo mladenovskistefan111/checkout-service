@@ -3,6 +3,7 @@ package checkout
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"checkout-service/internal/money"
 	pb "checkout-service/proto"
@@ -38,17 +39,17 @@ func (s *Service) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*p
 
 	prep, err := s.prepareOrderItemsAndShippingQuote(ctx, req.UserId, req.UserCurrency, req.Address)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 
-	total := pb.Money{CurrencyCode: req.UserCurrency, Units: 0, Nanos: 0}
-	total = money.Must(money.Sum(total, *prep.shippingCostLocalized))
+	total := &pb.Money{CurrencyCode: req.UserCurrency, Units: 0, Nanos: 0}
+	total = money.Must(money.Sum(total, prep.shippingCostLocalized))
 	for _, it := range prep.orderItems {
-		multPrice := money.MultiplySlow(*it.Cost, uint32(it.GetItem().GetQuantity()))
+		multPrice := money.MultiplySlow(it.Cost, uint32(it.GetItem().GetQuantity()))
 		total = money.Must(money.Sum(total, multPrice))
 	}
 
-	txID, err := s.chargeCard(ctx, &total, req.CreditCard)
+	txID, err := s.chargeCard(ctx, total, req.CreditCard)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to charge card: %+v", err)
 	}
@@ -132,21 +133,57 @@ func (s *Service) emptyUserCart(ctx context.Context, userID string) error {
 }
 
 func (s *Service) prepOrderItems(ctx context.Context, items []*pb.CartItem, userCurrency string) ([]*pb.OrderItem, error) {
-	out := make([]*pb.OrderItem, len(items))
+	type productResult struct {
+		product *pb.Product
+		err     error
+	}
+
+	products := make([]productResult, len(items))
 	cl := pb.NewProductCatalogServiceClient(s.ProductCatalogConn)
 
+	var wg sync.WaitGroup
 	for i, item := range items {
-		product, err := cl.GetProduct(ctx, &pb.GetProductRequest{Id: item.GetProductId()})
-		if err != nil {
-			return nil, fmt.Errorf("failed to get product %q: %w", item.GetProductId(), err)
-		}
-		price, err := s.convertCurrency(ctx, product.GetPriceUsd(), userCurrency)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert price of %q to %s: %w", item.GetProductId(), userCurrency, err)
-		}
-		out[i] = &pb.OrderItem{Item: item, Cost: price}
+		wg.Add(1)
+		go func(i int, item *pb.CartItem) {
+			defer wg.Done()
+			p, err := cl.GetProduct(ctx, &pb.GetProductRequest{Id: item.GetProductId()})
+			products[i] = productResult{p, err}
+		}(i, item)
 	}
-	return out, nil
+	wg.Wait()
+
+	type orderResult struct {
+		item *pb.OrderItem
+		err  error
+	}
+
+	out := make([]orderResult, len(items))
+	for i, pr := range products {
+		wg.Add(1)
+		go func(i int, pr productResult) {
+			defer wg.Done()
+			if pr.err != nil {
+				out[i] = orderResult{err: fmt.Errorf("failed to get product %q: %w", items[i].GetProductId(), pr.err)}
+				return
+			}
+			price, err := s.convertCurrency(ctx, pr.product.GetPriceUsd(), userCurrency)
+			if err != nil {
+				out[i] = orderResult{err: fmt.Errorf("failed to convert price of %q to %s: %w", items[i].GetProductId(), userCurrency, err)}
+				return
+			}
+			out[i] = orderResult{item: &pb.OrderItem{Item: items[i], Cost: price}}
+		}(i, pr)
+	}
+	wg.Wait()
+
+	result := make([]*pb.OrderItem, len(items))
+	for i, r := range out {
+		if r.err != nil {
+			return nil, r.err
+		}
+		result[i] = r.item
+	}
+	return result, nil
 }
 
 func (s *Service) quoteShipping(ctx context.Context, address *pb.Address, items []*pb.CartItem) (*pb.Money, error) {

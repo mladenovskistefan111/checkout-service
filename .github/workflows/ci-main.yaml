@@ -1,0 +1,441 @@
+name: CI - Main
+
+on:
+  workflow_dispatch: # manual trigger via GitHub Actions UI
+
+  # push:
+  #   branches-ignore:
+  #     - main
+
+jobs:
+  # ─── STAGE 1 (parallel) ───────────────────────────────────────────────────
+
+  lint-format:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5.4.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l -e .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.4
+
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-check:
+    name: Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5.4.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build
+        run: go build ./cmd/server/...
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5.4.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run unit tests
+        run: go test ./internal/... -v -race -count=1
+
+  # ─── STAGE 2 (parallel) ───────────────────────────────────────────────────
+
+  sca:
+    name: SCA - Dependency Vulnerabilities
+    runs-on: ubuntu-latest
+    needs: [lint-format, secret-scan, build-check, unit-tests]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5.4.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  sast:
+    name: SAST - Static Security Analysis
+    runs-on: ubuntu-latest
+    needs: [lint-format, secret-scan, build-check, unit-tests]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5.4.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec
+        run: gosec -exclude-generated ./...
+
+  # ─── STAGE 3 ──────────────────────────────────────────────────────────────
+
+  build-and-stage:
+    name: Build & Stage Image (ghcr.io)
+    runs-on: ubuntu-latest
+    needs: [sca, sast]
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      staged-image: ${{ steps.image-ref.outputs.ref }}
+      image-digest: ${{ steps.push.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=staging
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push to ghcr.io (staging)
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Extract single image ref for scanning
+        id: image-ref
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "ref=ghcr.io/${{ github.repository }}:sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+  # ─── STAGE 4 ──────────────────────────────────────────────────────────────
+
+  scan-image:
+    name: Scan Image for CVEs
+    runs-on: ubuntu-latest
+    needs: [build-and-stage]
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build-and-stage.outputs.staged-image }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: 1
+
+  # ─── STAGE 5 ──────────────────────────────────────────────────────────────
+
+  push-and-sign:
+    name: Push & Sign Image (Docker Hub)
+    runs-on: ubuntu-latest
+    needs: [scan-image, build-and-stage]
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract Docker Hub metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/checkout-service
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Push scanned image to Docker Hub
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image
+        run: |
+          cosign sign --yes \
+            ${{ secrets.DOCKERHUB_USERNAME }}/checkout-service@${{ steps.push.outputs.digest }}
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ secrets.DOCKERHUB_USERNAME }}/checkout-service@${{ steps.push.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Attach SBOM to image
+        run: |
+          cosign attach sbom \
+            --sbom sbom.spdx.json \
+            ${{ secrets.DOCKERHUB_USERNAME }}/checkout-service@${{ steps.push.outputs.digest }}
+
+  # ─── STAGE 6 — Deploy & Test on kind ──────────────────────────────────────
+
+  e2e-and-load-tests:
+    name: E2E & Load Tests
+    runs-on: ubuntu-latest
+    needs: [push-and-sign, build-and-stage]
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5.4.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      # ── Cluster setup ──────────────────────────────────────────────────
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Create kind cluster
+        run: kind create cluster --name ci --wait 60s
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull and load service image into kind
+        run: |
+          docker pull ${{ needs.build-and-stage.outputs.staged-image }}
+          kind load docker-image ${{ needs.build-and-stage.outputs.staged-image }} --name ci
+
+      - name: Pull and load mock-downstreams image into kind
+        run: |
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/checkout-mock-downstreams:latest
+          kind load docker-image ${{ secrets.DOCKERHUB_USERNAME }}/checkout-mock-downstreams:latest --name ci
+
+      - name: Create namespace
+        run: kubectl apply -f ci/k8s/namespace.yaml
+
+      - name: Create secrets
+        run: |
+          kubectl create secret generic checkout-secrets \
+            --from-literal=PRODUCT_CATALOG_SERVICE_ADDR=mock-downstreams:3550 \
+            --from-literal=CART_SERVICE_ADDR=mock-downstreams:7070 \
+            --from-literal=CURRENCY_SERVICE_ADDR=mock-downstreams:7000 \
+            --from-literal=SHIPPING_SERVICE_ADDR=mock-downstreams:50051 \
+            --from-literal=PAYMENT_SERVICE_ADDR=mock-downstreams:50051 \
+            --from-literal=EMAIL_SERVICE_ADDR=mock-downstreams:8080 \
+            -n ci-test
+
+      - name: Apply manifests
+        env:
+          SERVICE_IMAGE: ${{ needs.build-and-stage.outputs.staged-image }}
+          MOCK_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/checkout-mock-downstreams:latest
+        run: |
+          envsubst < ci/k8s/mock-downstreams.yaml | kubectl apply -f -
+          envsubst < ci/k8s/checkout-service.yaml | kubectl apply -f -
+
+      - name: Wait for mock-downstreams ready
+        run: |
+          kubectl wait --for=condition=ready pod \
+            -l app=mock-downstreams \
+            -n ci-test \
+            --timeout=120s
+
+      - name: Wait for service ready
+        run: |
+          kubectl wait --for=condition=ready pod \
+            -l app=checkout-service \
+            -n ci-test \
+            --timeout=120s
+
+      # ── Port forward ───────────────────────────────────────────────────
+
+      - name: Port forward service
+        run: |
+          kubectl port-forward svc/checkout-service 5050:5050 -n ci-test &
+          sleep 3
+
+      # ── Smoke test ─────────────────────────────────────────────────────
+
+      - name: Install grpcurl
+        run: |
+          curl -sSL https://github.com/fullstorydev/grpcurl/releases/download/v1.9.1/grpcurl_1.9.1_linux_x86_64.tar.gz \
+            | tar -xz -C /usr/local/bin grpcurl
+
+      - name: Smoke test - health check
+        run: |
+          response=$(grpcurl -plaintext localhost:5050 grpc.health.v1.Health/Check)
+          status=$(echo "$response" | grep -o '"status": "[^"]*"' | cut -d'"' -f4)
+          if [ "$status" != "SERVING" ]; then
+            echo "FAIL: expected SERVING, got $status"
+            exit 1
+          fi
+          echo "PASS: service is SERVING"
+
+      # ── E2E tests ──────────────────────────────────────────────────────
+
+      - name: E2E tests
+        env:
+          CHECKOUT_SERVICE_ADDR: localhost:5050
+        run: go test -tags e2e ./tests/e2e/... -v -timeout 60s
+
+      # ── Load test ──────────────────────────────────────────────────────
+
+      - name: Install ghz
+        run: |
+          curl -sSL https://github.com/bojand/ghz/releases/download/v0.120.0/ghz-linux-x86_64.tar.gz \
+            | tar -xz -C /usr/local/bin ghz
+
+      - name: Load test
+        run: |
+          ghz --insecure \
+            --proto proto/checkout.proto \
+            --call hipstershop.CheckoutService/PlaceOrder \
+            --data '{
+              "user_id": "load-test-user",
+              "user_currency": "USD",
+              "address": {
+                "street_address": "1 Load Test Ln",
+                "city": "Testville",
+                "state": "CA",
+                "country": "US",
+                "zip_code": 94105
+              },
+              "email": "loadtest@example.com",
+              "credit_card": {
+                "credit_card_number": "4111111111111111",
+                "credit_card_cvv": 123,
+                "credit_card_expiration_year": 2030,
+                "credit_card_expiration_month": 1
+              }
+            }' \
+            --rps 200 \
+            -z 30s \
+            -c 10 \
+            --format json \
+            -o /tmp/ghz-result.json \
+            localhost:5050
+
+      - name: Check load test thresholds
+        run: |
+          ERROR_RATE=$(jq '.errorRate' /tmp/ghz-result.json)
+          P99=$(jq '.latencyDistribution[] | select(.percentage == 99) | .latency' /tmp/ghz-result.json)
+          P99_MS=$(echo "$P99 / 1000000" | bc)
+
+          echo "Error rate: $ERROR_RATE"
+          echo "p99 latency: ${P99_MS}ms"
+
+          if (( $(echo "$ERROR_RATE > 0.01" | bc -l) )); then
+            echo "FAIL: error rate ${ERROR_RATE} exceeds 1%"
+            exit 1
+          fi
+
+          if (( P99_MS > 500 )); then
+            echo "FAIL: p99 latency ${P99_MS}ms exceeds 500ms"
+            exit 1
+          fi
+
+          echo "PASS: error rate=${ERROR_RATE} p99=${P99_MS}ms"
+
+      # ── Teardown (always) ──────────────────────────────────────────────
+
+      - name: Teardown kind cluster
+        if: always()
+        run: kind delete cluster --name ci
