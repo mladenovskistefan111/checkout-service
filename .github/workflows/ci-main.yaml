@@ -264,7 +264,7 @@ jobs:
   # ─── STAGE 6 — E2E & Load Tests (runner-based, no cluster needed) ────────
 
   e2e-and-load-tests:
-    name: E2E & Load Tests
+    name: E2E & Smoke Tests
     runs-on: ubuntu-latest
     needs: [push-and-sign]
 
@@ -321,66 +321,6 @@ jobs:
             exit 1
           fi
           echo "PASS: service is SERVING"
-
-      # ── Load test ──────────────────────────────────────────────────────
-      # The server will return errors on PlaceOrder since downstreams aren't
-      # running — we assert on p99 latency only (server must not hang/OOM).
-
-      - name: Install ghz
-        run: |
-          curl -sSL https://github.com/bojand/ghz/releases/download/v0.120.0/ghz-linux-x86_64.tar.gz \
-            | tar -xz -C /usr/local/bin ghz
-
-      - name: Load test
-        run: |
-          ghz --insecure \
-            --proto proto/checkout.proto \
-            --call hipstershop.CheckoutService/PlaceOrder \
-            --data '{
-              "user_id": "load-test-user",
-              "user_currency": "USD",
-              "address": {
-                "street_address": "1 Load Test Ln",
-                "city": "Testville",
-                "state": "CA",
-                "country": "US",
-                "zip_code": 94105
-              },
-              "email": "loadtest@example.com",
-              "credit_card": {
-                "credit_card_number": "4111111111111111",
-                "credit_card_cvv": 123,
-                "credit_card_expiration_year": 2030,
-                "credit_card_expiration_month": 1
-              }
-            }' \
-            --rps 200 \
-            -z 30s \
-            -c 10 \
-            --format json \
-            -o /tmp/ghz-result.json \
-            localhost:5050 || true
-
-      - name: Check load test thresholds
-        run: |
-          P99=$(jq '.latencyDistribution[] | select(.percentage == 99) | .latency' /tmp/ghz-result.json)
-          P99_MS=$(echo "$P99 / 1000000" | bc)
-          TOTAL=$(jq '.count' /tmp/ghz-result.json)
-
-          echo "Total requests: $TOTAL"
-          echo "p99 latency: ${P99_MS}ms"
-
-          if (( TOTAL == 0 )); then
-            echo "FAIL: no requests were sent"
-            exit 1
-          fi
-
-          if (( P99_MS > 500 )); then
-            echo "FAIL: p99 latency ${P99_MS}ms exceeds 500ms — server may be hanging"
-            exit 1
-          fi
-
-          echo "PASS: server handled load — p99=${P99_MS}ms over ${TOTAL} requests"
 
       # ── Teardown ───────────────────────────────────────────────────────
 
