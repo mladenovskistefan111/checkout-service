@@ -241,3 +241,6 @@ func (s *Service) shipOrder(ctx context.Context, address *pb.Address, items []*p
 	}
 	return resp.GetTrackingId(), nil
 }
+
+// Logger exposes the package logger so the entrypoint can attach telemetry hooks to it.
+func Logger() *logrus.Logger { return log }

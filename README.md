@@ -1,161 +1,207 @@
 # checkout-service
 
-A gRPC service that orchestrates the full order placement flow for the platform-demo e-commerce platform. It coordinates multiple downstream services — cart, product catalog, currency conversion, shipping, payment, and email — to process a customer order end-to-end. Part of a broader microservices platform built with full observability, GitOps, and internal developer platform tooling.
+A gRPC service that orchestrates order placement for the platform-demo e-commerce platform. A single `PlaceOrder` call fans out to six other services — cart, product catalog, currency, shipping, payment and email — to price the order, charge the card, ship it and confirm it. It is the most connected service in the system and holds no state of its own.
 
-## Overview
+Part of the [platform-demo](https://github.com/mladenovskistefan111) platform — microservices, observability (LGTM stack), GitOps (Argo CD), policy enforcement (Kyverno), infrastructure provisioning (Crossplane) and an internal developer portal (Backstage). See the master `README.md` in the platform-demo root for the whole-system view.
 
-The service exposes a single gRPC method:
+## At a glance
 
-| Method | Description |
+| | |
 |---|---|
-| `PlaceOrder` | Orchestrates cart retrieval, pricing, shipping quote, payment charge, and order confirmation email |
+| **Language / runtime** | Go 1.25 (static binary, `CGO_ENABLED=0`) |
+| **Image** | `mladenovskistefan/checkout-service` |
+| **Protocol / port** | gRPC (HTTP/2, plaintext) on `5050` |
+| **Metrics** | Pushed over OTLP/gRPC (Prometheus registry bridged into OpenTelemetry); `/metrics` on `9090` is still served for debugging |
+| **Health** | Standard `grpc.health.v1.Health/Check` on `5050` — static `SERVING`, does **not** reflect downstream health |
+| **State** | None |
+| **Depends on** | `product-catalog-service`, `cart-service`, `currency-service`, `shipping-service`, `payment-service`, `email-service` |
+| **Called by** | `frontend` |
+| **gRPC reflection** | Enabled — `grpcurl` works without `-proto` |
 
-**Port:** `5050` (gRPC)  
-**Metrics Port:** `9090` (Prometheus + pprof)  
-**Protocol:** gRPC  
-**Language:** Go  
+## API
 
-### What `PlaceOrder` does
+Package `hipstershop`, service `CheckoutService` ([`proto/checkout.proto`](proto/checkout.proto)). The proto file also contains client-side copies of the downstream service definitions.
 
-1. Fetches the user's cart from `cart-service`
-2. Resolves product prices via `product-catalog-service` and converts them to the user's currency via `currency-service`
-3. Gets a shipping quote from `shipping-service` and converts it to the user's currency
-4. Charges the credit card via `payment-service`
-5. Ships the order via `shipping-service`
-6. Empties the user's cart
-7. Sends an order confirmation email via `email-service`
-
-## Requirements
-
-- Go 1.25+
-- Docker
-- Running instances of all downstream services (or stubs for local development)
-- `grpcurl` for manual testing
-
-## Environment Variables
-
-| Variable | Required | Description |
+| Method | Request | Response |
 |---|---|---|
-| `PORT` | No | gRPC server port (default: `5050`) |
-| `METRICS_PORT` | No | Prometheus metrics + pprof port (default: `9090`) |
-| `ENABLE_TRACING` | No | Set to `1` to enable OpenTelemetry tracing |
-| `COLLECTOR_SERVICE_ADDR` | No | OTel collector address e.g. `alloy:4317` (required if tracing enabled) |
-| `OTEL_SERVICE_NAME` | No | Service name reported to OTel (default: `checkout-service`) |
-| `ENABLE_PROFILING` | No | Set to `1` to enable continuous profiling via Pyroscope |
-| `PYROSCOPE_ADDR` | No | Pyroscope server address (default: `http://pyroscope:4040`) |
-| `PRODUCT_CATALOG_SERVICE_ADDR` | No | (default: `product-catalog-service:3550`) |
-| `CART_SERVICE_ADDR` | No | (default: `cart-service:7070`) |
-| `CURRENCY_SERVICE_ADDR` | No | (default: `currency-service:7000`) |
-| `SHIPPING_SERVICE_ADDR` | No | (default: `shipping-service:50051`) |
-| `PAYMENT_SERVICE_ADDR` | No | (default: `payment-service:50051`) |
-| `EMAIL_SERVICE_ADDR` | No | (default: `email-service:8080`) |
+| `PlaceOrder` | `PlaceOrderRequest{ user_id, user_currency, Address address, email, CreditCardInfo credit_card }` | `PlaceOrderResponse{ OrderResult order }` (`order_id`, `shipping_tracking_id`, `shipping_cost`, `shipping_address`, `items[]`) |
 
-## Running Locally
+### What `PlaceOrder` does (in order)
 
-### 1. Build and run the service
+1. Generate an order UUID.
+2. `cart-service.GetCart(user_id)`.
+3. For every cart line, **in parallel**: `product-catalog-service.GetProduct` then `currency-service.Convert` (USD → `user_currency`).
+4. `shipping-service.GetQuote` (USD) then `currency-service.Convert` to `user_currency`.
+5. Sum items × quantity + shipping.
+6. `payment-service.Charge(total, credit_card)` — failure → gRPC `INTERNAL`, order aborted.
+7. `shipping-service.ShipOrder` — failure → gRPC `UNAVAILABLE`. **The card has already been charged at this point; there is no refund/compensation step.**
+8. `cart-service.EmptyCart` — error ignored.
+9. `email-service.SendOrderConfirmation` — error logged, **never fails the order**.
 
-```bash
-go build ./...
-go run ./cmd/server
+Failures in steps 2–5 return `INTERNAL` with the underlying message.
+
+## Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `5050` | gRPC listen port |
+| `METRICS_PORT` | `9090` | Prometheus (+pprof) HTTP port |
+| `PRODUCT_CATALOG_SERVICE_ADDR` | `product-catalog-service:3550` | `host:port` of product-catalog (gRPC) |
+| `CART_SERVICE_ADDR` | `cart-service:7070` | `host:port` of cart |
+| `CURRENCY_SERVICE_ADDR` | `currency-service:7000` | `host:port` of currency |
+| `SHIPPING_SERVICE_ADDR` | `shipping-service:50051` | `host:port` of shipping |
+| `PAYMENT_SERVICE_ADDR` | `payment-service:50051` | `host:port` of payment |
+| `EMAIL_SERVICE_ADDR` | `email-service:8080` | `host:port` of email |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (telemetry off) | OTLP/**gRPC** endpoint for **traces, metrics and logs** (scheme required), e.g. `http://alloy.monitoring.svc.cluster.local:4317`. Legacy fallback: `COLLECTOR_SERVICE_ADDR` (`host:port`). Telemetry is on iff an endpoint is set |
+| `ENABLE_TRACING` | — | Legacy switch: `0` forces all telemetry off even if an endpoint is set (it is no longer needed to turn telemetry on) |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `15000` | Milliseconds between metric pushes (Go also accepts durations such as `15s`) |
+| `OTEL_SERVICE_NAME` | `checkout-service` | `service.name` — becomes the Prometheus `job` and the Loki `service_name`; keep the default, dashboards depend on it |
+| `PYROSCOPE_ADDR` | `http://pyroscope:4040` | Profiles use the Pyroscope SDK push protocol (**not** OTLP). Point it at Alloy (`http://alloy.monitoring.svc.cluster.local:4040`), which forwards to Pyroscope, or directly at Pyroscope |
+| `ENABLE_PROFILING` | off | `1` starts the Pyroscope SDK **and** exposes `/debug/pprof/*` on the metrics port |
+
+Notes:
+
+- All six downstream addresses are **plain `host:port`** values (no scheme). Defaults are short names that only resolve if everything is in the same namespace; across namespaces use `svc.<namespace>.svc.cluster.local:<port>`.
+- The Pyroscope application name is hard-coded to `checkout-service` (not driven by `OTEL_SERVICE_NAME`).
+- Connections use `grpc.NewClient`, which is **lazy**: the service starts and reports `SERVING` even when none of the downstreams exist. Failures surface per request, not at startup. (Older docs said all six must be up at boot — that is not the case.)
+- The gRPC client connections use `pick_first` load balancing and are plaintext/insecure.
+- Telemetry is **pushed**, not scraped: traces, metrics and logs share one OTLP/gRPC endpoint (Alloy); profiles go to Pyroscope (via Alloy). `service.instance.id` is the pod hostname, so replicas stay distinct in Mimir.
+- A Prometheus `/metrics` endpoint is still served on `METRICS_PORT` for debugging, but nothing has to scrape it — the same registry is bridged into OTLP, so metric names are unchanged.
+- Logs: the `logrus` logger keeps writing JSON to stdout and additionally mirrors every record over OTLP (with trace ids when a context is attached).
+
+## Container image
+
+Multi-stage [`Dockerfile`](Dockerfile):
+
+| Stage | Base | What happens |
+|---|---|---|
+| builder | `golang:1.25-alpine` | `go mod download`, then `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" ./cmd/server` |
+| runtime | `alpine:3.21` | single binary at `/app/checkout-service` |
+
+- **Entrypoint:** `/app/checkout-service`. `GOTRACEBACK=single`.
+- **User: root.** The Dockerfile has no `USER`, and the image runs as UID 0 (verified). It needs no privileges (ports > 1024, no file writes), so set a non-root `runAsUser` in Kubernetes (e.g. `10001`) — no image change required.
+- **Architecture: `amd64` only** — `GOARCH=amd64` is hard-coded. On `arm64` nodes the pod fails with `exec format error`. Remove the flag (or use `buildx` with `TARGETARCH`) for multi-arch.
+- **EXPOSE:** `5050`, `9090`. **No `HEALTHCHECK`.**
+- **Image size:** ~10 MB. Alpine includes a shell, so `kubectl exec` works.
+- `.dockerignore` excludes `vendor/` only; `.git` and `tests/` are sent in the build context.
+
+## Kubernetes deployment notes
+
+**Workload:** stateless `Deployment`. Multiple replicas are safe, but note that the *outbound* gRPC clients pin each connection to a single backend pod (see "gRPC load balancing" in the master README), and inbound traffic from `frontend` is likewise per-connection.
+
+**Ports to declare**
+
+| Name | Port | Protocol | Expose via Service? |
+|---|---|---|---|
+| `grpc` | `5050` | TCP (HTTP/2) | Yes — `frontend` dials `checkout-service:5050` |
+| `metrics` | `9090` | TCP (HTTP/1.1) | Optional (debugging/pprof). Not scraped by default — metrics are pushed over OTLP |
+
+**Service DNS name expected by callers:** `checkout-service` (`frontend`: `CHECKOUT_SERVICE_ADDR=checkout-service:5050`).
+
+**Probes** — the health endpoint is static, so probes only prove the process is up:
+
+```yaml
+readinessProbe:
+  grpc: { port: 5050 }
+  periodSeconds: 5
+livenessProbe:
+  grpc: { port: 5050 }
+  periodSeconds: 10
+  failureThreshold: 3
 ```
 
-### 2. Run with Docker
+Startup is near-instant; no `startupProbe` needed.
 
-```bash
-docker build -t checkout-service:local .
+**Security context**
 
-docker run -p 5050:5050 -p 9090:9090 \
-  -e PRODUCT_CATALOG_SERVICE_ADDR="product-catalog-service:3550" \
-  checkout-service:local
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001        # image runs as root by default; any non-zero UID works
+  runAsGroup: 10001
+  readOnlyRootFilesystem: true     # static Go binary, writes nothing
+  allowPrivilegeEscalation: false
+  capabilities: { drop: ["ALL"] }
 ```
 
-> **Note:** All six downstream services must be reachable at startup. For local development without the full stack, point missing services at a no-op gRPC stub.
+**Resources** — requests sized from measured idle usage in the test stack (see the chart's `values.yaml` for limits):
 
-## Testing
-
-### Manual gRPC testing
-
-Install `grpcurl` then:
-
-```bash
-# place an order
-grpcurl -plaintext -d '{
-  "user_id": "test-user",
-  "user_currency": "USD",
-  "address": {
-    "street_address": "123 Main St",
-    "city": "New York",
-    "state": "NY",
-    "country": "US",
-    "zip_code": 10001
-  },
-  "email": "test@example.com",
-  "credit_card": {
-    "credit_card_number": "4111111111111111",
-    "credit_card_cvv": 123,
-    "credit_card_expiration_year": 2030,
-    "credit_card_expiration_month": 12
-  }
-}' localhost:5050 hipstershop.CheckoutService/PlaceOrder
-
-# health check
-grpcurl -plaintext localhost:5050 grpc.health.v1.Health/Check
-
-# prometheus metrics
-curl localhost:9090/metrics
-
-# pprof
-curl localhost:9090/debug/pprof/
+```yaml
+resources:
+  requests: { cpu: 50m, memory: 48Mi }
+  limits:   { cpu: "500m", memory: 128Mi }
 ```
 
-### Load testing
+**Config / secrets:** no secrets. All six downstream addresses + observability endpoints belong in values (`dependencies.*`, `monitoring.*`) rendered into env.
 
-```bash
-for i in $(seq 1 20); do
-  grpcurl -plaintext -d '{
-    "user_id": "load-test-user",
-    "user_currency": "USD",
-    "address": {"street_address": "123 Main St", "city": "New York", "state": "NY", "country": "US", "zip_code": 10001},
-    "email": "test@example.com",
-    "credit_card": {"credit_card_number": "4111111111111111", "credit_card_cvv": 123, "credit_card_expiration_year": 2030, "credit_card_expiration_month": 12}
-  }' localhost:5050 hipstershop.CheckoutService/PlaceOrder
-  sleep 0.2
-done
-```
+**Telemetry:** pushed, not scraped — OTLP/gRPC to Alloy (`global.monitoring.otlpEndpoint`), profiles to Alloy `:4040`. Metrics carry `job="checkout-service"` and `instance=<pod>`; no scrape annotations or `ServiceMonitor` are needed.
 
-## Project Structure
-
-```
-├── cmd/server/         # Binary entrypoint — server init, tracing, profiling, gRPC setup
-├── internal/checkout/  # Business logic — PlaceOrder orchestration and downstream calls
-├── internal/money/     # Money arithmetic helpers (sum, multiply)
-├── proto/              # Proto definition and generated gRPC code
-├── docs/               # Architecture decisions, runbooks, service contract
-├── Dockerfile
-├── go.mod
-└── go.sum
-```
+**Helm chart:** [`platform-demo-helm/checkout-service`](../platform-demo-helm/checkout-service) (built on the shared `platform-common` library chart). It ships with HA defaults — 2 replicas,
+HPA, PodDisruptionBudget, topology spread, NetworkPolicy, restricted pod security context, probes and the full env contract (see Configuration) —
+and was verified on a 3-node kind cluster under the `restricted` Pod Security Standard.
 
 ## Observability
 
-The service is fully instrumented across all four signals:
+| Signal | Implementation | Destination |
+|---|---|---|
+| **Traces** | OpenTelemetry (`otelgrpc`/`otelhttp` handlers), OTLP/gRPC exporter, `AlwaysSample`, W3C TraceContext + Baggage; the trace context is propagated to every downstream call | Alloy `:4317` → Tempo |
+| **Metrics** | The Prometheus default registry (`grpc_server_handled_total`, `grpc_server_handling_seconds_*`, `grpc_server_started_total`, `grpc_server_msg_*`, Go runtime/process) is bridged into OpenTelemetry and pushed over OTLP/gRPC every 15 s — metric names are unchanged. `/metrics` is still served for debugging | Alloy → Mimir |
+| **Logs** | `logrus` JSON to stdout **and** an OTLP/gRPC hook (`otellogrus`) (the `internal/checkout` logger is hooked too) | Alloy → Loki |
+| **Profiles** | Pyroscope Go SDK (CPU, alloc/inuse objects & space) plus pprof HTTP when profiling is on | Alloy `:4040` → Pyroscope |
 
-| Signal | Implementation |
-|---|---|
-| **Traces** | OpenTelemetry — exported to Alloy via OTLP gRPC, stored in Tempo |
-| **Metrics** | `go-grpc-prometheus` — scraped by Alloy, stored in Mimir |
-| **Logs** | `logrus` JSON — collected by Alloy from Docker, stored in Loki |
-| **Profiles** | Pyroscope Go SDK — CPU, alloc objects, alloc space, inuse objects, inuse space |
+Every series carries `job="checkout-service"` (from `service.name`) and `instance=<pod name>` (`service.instance.id`), which is what the Grafana dashboards select on. Logs land in Loki with `service_name="checkout-service"` and trace/span ids, so a log line links to its trace.
 
-## Documentation
+## Running locally
 
-See [`docs/`](./docs) for:
+Requirements: Go 1.25+, Docker, [`grpcurl`](https://github.com/fullstorydev/grpcurl), and the six downstream services (or stand-ins) for a *successful* order.
 
-- Service contract and proto definition
-- Architecture decision records
-- Observability (metrics, traces, logs, profiles)
-- Runbook
+```bash
+go build ./... && go run ./cmd/server
 
-## Part Of
+docker build -t checkout-service:local .
+docker run --rm -p 5050:5050 -p 9090:9090 \
+  -e CART_SERVICE_ADDR=host.docker.internal:7070 \
+  -e PRODUCT_CATALOG_SERVICE_ADDR=host.docker.internal:3550 \
+  checkout-service:local
 
-This service is part of [platform-demo](https://github.com/mladenovskistefan111) — a full platform engineering project featuring microservices, observability (LGTM stack), GitOps (Argo CD), policy enforcement (Kyverno), infrastructure provisioning (Crossplane), and an internal developer portal (Backstage).
+go test ./...
+```
+
+The simplest full setup is the compose file in `platform-demo-observability/`.
+
+### Manual gRPC testing (reflection is on)
+
+```bash
+grpcurl -plaintext -d '{
+  "user_id": "test-user",
+  "user_currency": "USD",
+  "address": {"street_address": "123 Main St", "city": "New York", "state": "NY", "country": "US", "zip_code": 10001},
+  "email": "test@example.com",
+  "credit_card": {"credit_card_number": "4111111111111111", "credit_card_cvv": 123,
+                  "credit_card_expiration_year": 2030, "credit_card_expiration_month": 12}
+}' localhost:5050 hipstershop.CheckoutService/PlaceOrder
+
+grpcurl -plaintext localhost:5050 grpc.health.v1.Health/Check
+curl -s localhost:9090/metrics | grep grpc_server
+```
+
+The user's cart must already contain items (add some via `cart-service`), otherwise the order has zero lines and a total of 0.
+
+## Project structure
+
+```
+├── cmd/server/main.go         # entrypoint: tracing, profiling, gRPC server, downstream dials, metrics server
+├── internal/checkout/         # PlaceOrder orchestration (service.go)
+├── internal/money/            # Money arithmetic (Sum, MultiplySlow)
+├── proto/                     # checkout.proto + generated Go (checkout.pb.go, checkout_grpc.pb.go)
+├── Dockerfile
+├── go.mod / go.sum
+└── docs/                      # empty placeholder
+```
+
+## Known limitations
+
+- **No compensation:** if shipping fails after payment succeeded, the customer is charged and no order is created. Not idempotent either — retries re-charge.
+- Health is static; readiness does not reflect downstream availability.
+- Image is `amd64`-only and runs as root unless the pod overrides it.
+- Single-attempt calls: no retries or timeouts beyond the incoming request context.
