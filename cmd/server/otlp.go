@@ -13,7 +13,6 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -109,7 +108,7 @@ func initTelemetry(ctx context.Context, defaultServiceName string, loggers ...*l
 		sdklog.WithResource(res),
 		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExp)),
 	)
-	global.SetLoggerProvider(lp)
+	otel.SetLoggerProvider(lp)
 	for _, l := range loggers {
 		l.AddHook(otellogrus.NewHook(serviceName, otellogrus.WithLoggerProvider(lp)))
 	}
