@@ -1,0 +1,61 @@
+name: Release
+
+# Runs when a semver tag is pushed (git tag -a v1.2.3 && git push origin v1.2.3) or by hand.
+# Gates: same as CI. Then the scanned image digest is promoted to Docker Hub and signed.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Promote the scanned image to Docker Hub and sign it (commit must be on main)
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  go:
+    permissions:
+      contents: read
+      pull-requests: read # gitleaks lists the PR's commits through the API
+    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/go-ci.yaml@7920b90327af737e69d1b7a7f16a9f92bbd952d6 # main (v1.0.0 pending)
+    with:
+      test-packages: ./internal/...
+      e2e-packages: ./tests/e2e/...
+      smoke-port: "5050"
+      smoke-env: |
+        PRODUCT_CATALOG_SERVICE_ADDR=localhost:3550
+        CART_SERVICE_ADDR=localhost:7070
+        CURRENCY_SERVICE_ADDR=localhost:7000
+        SHIPPING_SERVICE_ADDR=localhost:50051
+        PAYMENT_SERVICE_ADDR=localhost:50051
+        EMAIL_SERVICE_ADDR=localhost:8080
+
+  image:
+    needs: [go]
+    permissions:
+      contents: read
+      packages: write
+    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/docker-build.yaml@7920b90327af737e69d1b7a7f16a9f92bbd952d6 # main (v1.0.0 pending)
+
+  workflows:
+    permissions:
+      contents: read
+    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/workflow-lint.yaml@7920b90327af737e69d1b7a7f16a9f92bbd952d6 # main (v1.0.0 pending)
+
+  promote:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish }}
+    needs: [image, workflows]
+    permissions:
+      id-token: write # keyless cosign signing
+      contents: read
+      packages: read
+    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/docker-promote.yaml@7920b90327af737e69d1b7a7f16a9f92bbd952d6 # main (v1.0.0 pending)
+    with:
+      image-name: checkout-service
+      staged-image: ${{ needs.image.outputs.staged-image }}
+      digest: ${{ needs.image.outputs.digest }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
