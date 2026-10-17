@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # gitleaks lists the PR's commits through the API
-    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/go-ci.yaml@7920b90327af737e69d1b7a7f16a9f92bbd952d6 # main (v1.0.0 pending)
+    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/go-ci.yaml@87fca0e809f6ba84b782bc2fb2cc1d740b3c877f # v1.1.0
     with:
       test-packages: ./internal/...
       e2e-packages: ./tests/e2e/...
@@ -37,12 +37,12 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/docker-build.yaml@7920b90327af737e69d1b7a7f16a9f92bbd952d6 # main (v1.0.0 pending)
+    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/docker-build.yaml@87fca0e809f6ba84b782bc2fb2cc1d740b3c877f # v1.1.0
 
   workflows:
     permissions:
       contents: read
-    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/workflow-lint.yaml@7920b90327af737e69d1b7a7f16a9f92bbd952d6 # main (v1.0.0 pending)
+    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/workflow-lint.yaml@87fca0e809f6ba84b782bc2fb2cc1d740b3c877f # v1.1.0
 
   promote:
     if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish }}
@@ -51,7 +51,7 @@ jobs:
       id-token: write # keyless cosign signing
       contents: read
       packages: read
-    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/docker-promote.yaml@7920b90327af737e69d1b7a7f16a9f92bbd952d6 # main (v1.0.0 pending)
+    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/docker-promote.yaml@87fca0e809f6ba84b782bc2fb2cc1d740b3c877f # v1.1.0
     with:
       image-name: checkout-service
       staged-image: ${{ needs.image.outputs.staged-image }}
