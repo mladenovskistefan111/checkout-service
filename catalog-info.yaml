@@ -1,0 +1,50 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: checkout-service
+  title: checkout-service
+  description: "A gRPC service that orchestrates order placement for the platform-demo e-commerce platform."
+  annotations:
+    github.com/project-slug: platform-boutique/app-checkout-service
+    backstage.io/techdocs-ref: dir:.
+    backstage.io/kubernetes-id: checkout-service
+    backstage.io/kubernetes-namespace: platform-demo
+    backstage.io/kubernetes-label-selector: app.kubernetes.io/name=checkout-service
+    argocd/app-name: dev-checkout-service
+    grafana/dashboard-selector: "tags @> 'checkout'"
+    grafana/overview-dashboard: "https://grafana.platform-demo.test/d/checkout-service-overview"
+  tags: [go, grpc]
+  links:
+    - { url: "https://github.com/platform-boutique/app-checkout-service", title: Repository, icon: github }
+    - { url: "https://argocd.platform-demo.test/applications/argocd/dev-checkout-service", title: Argo CD, icon: dashboard }
+    - { url: "https://grafana.platform-demo.test/d/checkout-service-overview", title: Grafana dashboard, icon: dashboard }
+spec:
+  type: service
+  lifecycle: experimental
+  owner: group:default/maintainers
+  system: shop
+  providesApis: [checkout-service-api]
+  consumesApis: [cart-service-api, currency-service-api, email-service-api, payment-service-api, product-catalog-service-api, shipping-service-api]
+  dependsOn:
+    - component:default/cart-service
+    - component:default/currency-service
+    - component:default/email-service
+    - component:default/payment-service
+    - component:default/product-catalog-service
+    - component:default/shipping-service
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: checkout-service-api
+  description: gRPC interface of checkout-service (Protocol Buffers).
+  tags: [grpc, protobuf]
+  links:
+    - { url: "https://github.com/platform-boutique/app-checkout-service/blob/main/proto/checkout.proto", title: "checkout.proto on GitHub", icon: code }
+spec:
+  type: grpc
+  lifecycle: experimental
+  owner: group:default/maintainers
+  system: shop
+  definition:
+    $text: ./proto/checkout.proto
