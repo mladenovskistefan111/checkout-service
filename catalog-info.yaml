@@ -12,6 +12,7 @@ metadata:
     backstage.io/kubernetes-label-selector: app.kubernetes.io/name=checkout-service
     argocd/app-name: dev-checkout-service
     grafana/dashboard-selector: "tags @> 'checkout'"
+    grafana/alert-label-selector: "service=checkout-service"
     grafana/overview-dashboard: "https://grafana.platform-demo.test/d/checkout-service-overview"
   tags: [go, grpc]
   links:
