@@ -17,7 +17,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read # gitleaks lists the PR's commits through the API
-    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/go-ci.yaml@87fca0e809f6ba84b782bc2fb2cc1d740b3c877f # v1.1.0
+    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/go-ci.yaml@cfa9265dd493260f1bf67b77d6cc396356c132d6 # v2 test
     with:
       test-packages: ./internal/...
       e2e-packages: ./tests/e2e/...
@@ -35,9 +35,9 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/docker-build.yaml@87fca0e809f6ba84b782bc2fb2cc1d740b3c877f # v1.1.0
+    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/docker-build.yaml@cfa9265dd493260f1bf67b77d6cc396356c132d6 # v2 test
 
   workflows:
     permissions:
       contents: read
-    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/workflow-lint.yaml@87fca0e809f6ba84b782bc2fb2cc1d740b3c877f # v1.1.0
+    uses: mladenovskistefan111/platform-demo-workflows/.github/workflows/workflow-lint.yaml@cfa9265dd493260f1bf67b77d6cc396356c132d6 # v2 test
