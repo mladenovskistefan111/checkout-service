@@ -6,6 +6,7 @@ metadata:
   description: "A gRPC service that orchestrates order placement for the platform-demo e-commerce platform."
   annotations:
     github.com/project-slug: platform-boutique/app-checkout-service
+    backstage.io/source-location: url:https://github.com/platform-boutique/app-checkout-service/tree/main/
     backstage.io/techdocs-ref: dir:.
     backstage.io/kubernetes-id: checkout-service
     backstage.io/kubernetes-namespace: platform-demo
@@ -16,7 +17,6 @@ metadata:
     grafana/overview-dashboard: "https://grafana.platform-demo.test/d/checkout-service-overview"
   tags: [go, grpc]
   links:
-    - { url: "https://github.com/platform-boutique/app-checkout-service", title: Repository, icon: github }
     - { url: "https://argocd.platform-demo.test/applications/argocd/dev-checkout-service", title: Argo CD, icon: dashboard }
     - { url: "https://grafana.platform-demo.test/d/checkout-service-overview", title: Grafana dashboard, icon: dashboard }
 spec:
