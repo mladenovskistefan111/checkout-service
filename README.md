@@ -207,3 +207,5 @@ The user's cart must already contain items (add some via `cart-service`), otherw
 - Health is static; readiness does not reflect downstream availability.
 - Image is `amd64`-only and runs as root unless the pod overrides it.
 - Single-attempt calls: no retries or timeouts beyond the incoming request context.
+
+<!-- pipeline test: docs-only change -->
