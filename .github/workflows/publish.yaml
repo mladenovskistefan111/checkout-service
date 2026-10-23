@@ -1,0 +1,29 @@
+name: Publish
+
+# A merge to main publishes the image ONCE (ghcr.io staging, Trivy, Docker Hub as sha-<commit>, cosign, SBOM) and opens the
+# pull request in platform-demo-helm that moves `dev` to the new digest. No tags, no rebuilds.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # keyless cosign signing
+    uses: platform-boutique/platform-demo-workflows/.github/workflows/service-publish.yaml@9eca14970703783ef2008c0a87ee8d2d28757bb8 # v3.2.0
+    with:
+      app: checkout-service
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      PROMOTE_APP_ID: ${{ secrets.PROMOTE_APP_ID }}
+      PROMOTE_APP_PRIVATE_KEY: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
