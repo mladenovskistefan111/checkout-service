@@ -19,7 +19,7 @@ jobs:
       contents: read
       packages: write
       id-token: write # keyless cosign signing
-    uses: platform-boutique/platform-demo-workflows/.github/workflows/service-publish.yaml@9eca14970703783ef2008c0a87ee8d2d28757bb8 # v3.2.0
+    uses: platform-boutique/platform-demo-workflows/.github/workflows/service-publish.yaml@b31c1150b50fd66b4b7d4c07bd654d1c40e2585e # v3.2.1
     with:
       app: checkout-service
     secrets:
