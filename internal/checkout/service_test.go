@@ -239,6 +239,7 @@ func defaultMocks() *mocks {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 func TestPlaceOrder_Success(t *testing.T) {
+	t.Fatal("pipeline test: this failure is deliberate")
 	m := defaultMocks()
 	svc, cleanup := startMockServers(t, m)
 	defer cleanup()
