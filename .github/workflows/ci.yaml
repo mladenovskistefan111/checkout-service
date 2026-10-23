@@ -1,6 +1,7 @@
 name: CI
 
-# Pull-request gate. Nothing runs on a plain push; images are published by release.yaml.
+# Pull-request gate: secret scan, workflow lint and (when code changed) tests, SAST, SCA and an image build + CVE scan, all in
+# parallel; nothing is pushed. The only required status check is `ci / gate`.
 on:
   pull_request:
     branches: [main]
@@ -13,12 +14,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  go:
+  ci:
     permissions:
       contents: read
-      pull-requests: read # gitleaks lists the PR's commits through the API
-    uses: platform-boutique/platform-demo-workflows/.github/workflows/go-ci.yaml@28d80c1d4abd81c1529bf593a874640132692e8a # v2.0.2
+      packages: read # reads the registry build cache
+      checks: write # only the dotnet test reporter uses it; the grant is checked for every job, skipped ones too
+    uses: platform-boutique/platform-demo-workflows/.github/workflows/service-ci.yaml@b31c1150b50fd66b4b7d4c07bd654d1c40e2585e # v3.2.1
     with:
+      language: go
       test-packages: ./internal/...
       e2e-packages: ./tests/e2e/...
       smoke-port: "5050"
@@ -29,15 +32,3 @@ jobs:
         SHIPPING_SERVICE_ADDR=localhost:50051
         PAYMENT_SERVICE_ADDR=localhost:50051
         EMAIL_SERVICE_ADDR=localhost:8080
-
-  image:
-    needs: [go]
-    permissions:
-      contents: read
-      packages: write
-    uses: platform-boutique/platform-demo-workflows/.github/workflows/docker-build.yaml@28d80c1d4abd81c1529bf593a874640132692e8a # v2.0.2
-
-  workflows:
-    permissions:
-      contents: read
-    uses: platform-boutique/platform-demo-workflows/.github/workflows/workflow-lint.yaml@28d80c1d4abd81c1529bf593a874640132692e8a # v2.0.2
