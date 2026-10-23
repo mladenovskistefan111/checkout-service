@@ -1,0 +1,23 @@
+site_name: checkout-service
+site_description: >-
+  A gRPC service that orchestrates order placement for the platform-demo
+  e-commerce platform.
+repo_url: https://github.com/platform-boutique/app-checkout-service
+edit_uri: edit/main/docs/
+nav:
+  - Overview: index.md
+  - API: api.md
+  - Configuration: configuration.md
+  - Container image: container-image.md
+  - Kubernetes: kubernetes.md
+  - Observability: observability.md
+  - Develop & test: development.md
+  - Known limitations: limitations.md
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+plugins:
+  - techdocs-core
